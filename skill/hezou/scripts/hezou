@@ -1,0 +1,263 @@
+#!/usr/bin/env bash
+
+VERSION=0.5.1
+DIR="${HEZOU_HOME:-$HOME/.hezou}"
+CONFIG="$DIR/config"
+LAYERS="background character neck mouth eyes headwear item"
+PAY_CONTRACT="${HEZOU_PAY_CONTRACT:-0x40cca7b3be3133e038b9307cd354f1c0271283bb}"
+PAY_RPC="${HEZOU_PAY_RPC:-https://rpc.mainnet.chain.robinhood.com}"
+PAY_CHAIN="${HEZOU_PAY_CHAIN:-4663}"
+PAY_WEI=1000000000000000
+PAY_SELECTOR=0x3b05d19b
+
+conf() {
+  [ -f "$CONFIG" ] && sed -n "s/^$1=//p" "$CONFIG" | tail -n 1
+}
+
+set_conf() {
+  mkdir -p "$DIR" && chmod 700 "$DIR" 2>/dev/null
+  (umask 077; { [ -f "$CONFIG" ] && grep -v "^$1=" "$CONFIG"; printf '%s=%s\n' "$1" "$2"; } > "$CONFIG.$$" && mv "$CONFIG.$$" "$CONFIG")
+}
+
+API="${HEZOU_API:-$(conf api)}"
+API="${API:-https://hezou.app/api}"
+API="${API%/}"
+SITE="${HEZOU_SITE:-$(conf site)}"
+SITE="${SITE:-https://hezou.app}"
+SITE="${SITE%/}"
+
+AGENT_KEY="${HEZOU_AGENT_TOKEN:-}"
+NO_OPEN="${HEZOU_NO_OPEN:-}"
+NO_WAIT=""
+ARGS=()
+for a in "$@"; do
+  case "$a" in
+    --key=*) AGENT_KEY="${a#--key=}" ;;
+    --no-open) NO_OPEN=1 ;;
+    --no-wait) NO_WAIT=1 ;;
+    *) ARGS+=("$a") ;;
+  esac
+done
+KEY="${AGENT_KEY:-${HEZOU_KEY:-$(conf key)}}"
+CAST=""
+if [ -n "${HEZOU_KEYSTORE:-}" ] && command -v cast >/dev/null 2>&1; then CAST=1; fi
+
+wallet_cast() {
+  ETH_KEYSTORE="$HEZOU_KEYSTORE" ETH_PASSWORD="${HEZOU_KEYSTORE_PASSWORD_FILE:-}" cast "$@"
+}
+
+TMP=$(mktemp -d 2>/dev/null || mktemp -d -t hezou)
+trap 'rm -rf "$TMP"' EXIT
+SAVED_PATH=""
+WAIT_LIMIT=100
+
+hdr() {
+  grep -i "^$1:" "$TMP/h" 2>/dev/null | tail -n 1 | cut -d' ' -f2- | tr -d '\r'
+}
+
+op_key() {
+  local f="$DIR/ops/$1" now at key
+  now=$(date +%s)
+  if [ -f "$f" ]; then
+    read -r at key < "$f"
+    if [ -n "$key" ] && [ $((now - at)) -lt 600 ]; then printf '%s' "$key"; return; fi
+  fi
+  key=$(od -An -N12 -tx1 /dev/urandom | tr -d ' \n')
+  mkdir -p "$DIR/ops" 2>/dev/null && printf '%s %s\n' "$now" "$key" > "$f"
+  printf '%s' "$key"
+}
+
+count_agents() {
+  ls "$1" 2>/dev/null | grep -cE '^hezou-(background|character|neck|mouth|eyes|headwear|item)\.(md|toml)$'
+}
+
+saved_performance() {
+  local id until
+  [ -f "$DIR/keys" ] || return 1
+  read -r id until < "$DIR/keys"
+  [ -n "$until" ] && [ "$until" -gt "$(date +%s)" ] && printf '%s' "$id"
+}
+
+request() {
+  local idem="$1" a
+  shift
+  local form=() extra=()
+  for a in "$@"; do form+=(--data-urlencode "a=$a"); done
+  [ ${#form[@]} -eq 0 ] && form=(--data-urlencode "a=help")
+  [ -n "$KEY" ] && extra+=(-H "Authorization: Bearer $KEY")
+  case "${1:-}" in
+    doctor)
+      local home="ok"
+      { mkdir -p "$DIR" && [ -w "$DIR" ]; } 2>/dev/null || home="not writable: $DIR"
+      extra+=(-H "X-Hezou-Home: $home" -H "X-Hezou-Agents: $(count_agents "$HOME/.claude/agents"),$(count_agents "${CODEX_HOME:-$HOME/.codex}/agents")")
+      ;;
+    resume)
+      local perf
+      perf=$(saved_performance) && extra+=(-H "X-Hezou-Saved: $perf")
+      ;;
+  esac
+  : > "$TMP/h"
+  : > "$TMP/b"
+  curl -sS --max-time 30 --retry 2 --retry-delay 1 --retry-connrefused -X POST "$API/cli" \
+    -D "$TMP/h" -o "$TMP/b" -H "Idempotency-Key: $idem" -H "X-Hezou-Client: hezou $VERSION" \
+    "${extra[@]}" "${form[@]}" 2> "$TMP/e"
+}
+
+save_file() {
+  local rel="${1%% *}" url="${1#* }"
+  case "$rel" in ""|/*|*..*) return 1 ;; esac
+  case "$url" in /*) ;; *) return 1 ;; esac
+  mkdir -p "$(dirname "$DIR/$rel")" || return 1
+  curl -sS -f --max-time 30 --retry 2 -H "Authorization: Bearer $KEY" "$API$url" -o "$DIR/$rel" 2>> "$TMP/e" || return 1
+  SAVED_PATH="$DIR/$rel"
+}
+
+open_url() {
+  local u="$1"
+  [ -n "$NO_OPEN" ] && return 1
+  case "$u" in
+    saved) u="$SAVED_PATH"; [ -n "$u" ] || return 1 ;;
+    "$SITE"/*) ;;
+    *) return 1 ;;
+  esac
+  if [ "$(uname -s)" = Darwin ]; then
+    open "$u" >/dev/null 2>&1 &
+  elif command -v xdg-open >/dev/null 2>&1; then
+    xdg-open "$u" >/dev/null 2>&1 &
+  elif command -v cmd.exe >/dev/null 2>&1; then
+    cmd.exe /c start "" "$u" >/dev/null 2>&1 &
+  else
+    return 1
+  fi
+}
+
+call() {
+  local op idem started last="" sig code err
+  op=$(printf '%s\n' "$KEY" "$@" | cksum | cut -d' ' -f1)
+  idem=$(op_key "$op")
+  started=$(date +%s)
+  while :; do
+    if ! request "$idem" "$@"; then
+      echo "error: cannot reach $API ($(tail -n 1 "$TMP/e")). Nothing was retried blindly: run hezou resume to see where things stand. Inside a sandbox without network access (Codex by default), rerun this command with network access." >&2
+      exit 4
+    fi
+    code=$(hdr x-hezou-exit)
+    if [ -z "$code" ]; then
+      echo "error: $API/cli did not answer like the HEZOU API ($(head -n 1 "$TMP/h" | tr -d '\r')). Check the api line in $CONFIG or reinstall the skill." >&2
+      exit 1
+    fi
+    err=$(hdr x-hezou-error)
+    [ "$err" = in_progress ] || rm -f "$DIR/ops/$op"
+    [ -n "$(hdr x-hezou-retry)" ] || break
+    [ $(($(date +%s) - started)) -lt "$WAIT_LIMIT" ] || break
+    sig=$(tr -d '0-9' < "$TMP/b")
+    if [ "$sig" != "$last" ]; then cat "$TMP/b"; last="$sig"; fi
+    sleep "$(hdr x-hezou-retry)"
+  done
+  CODE="$code"
+  ERR="$err"
+  JOIN=$(hdr x-hezou-join)
+  WATCH=$(hdr x-hezou-watch)
+  OPEN=$(hdr x-hezou-open)
+  TX=$(hdr x-hezou-tx)
+  STILL=$(hdr x-hezou-retry)
+  local key perf save
+  key=$(hdr x-hezou-key)
+  perf=$(hdr x-hezou-performance)
+  save=$(hdr x-hezou-save)
+  if [ -n "$key" ]; then
+    set_conf key "$key"
+    KEY="$key"
+  fi
+  [ -n "$perf" ] && (umask 077; { printf '%s\n' "$perf"; cat "$TMP/b"; } > "$DIR/keys")
+  SAVED_PATH=""
+  if [ -n "$save" ] && ! save_file "$save"; then
+    echo "warning: could not save ${save%% *}: $(tail -n 1 "$TMP/e")" >&2
+  fi
+  local body
+  body=$(cat "$TMP/b")
+  body="${body//\{saved\}/${SAVED_PATH:-(not saved, run proof again)}}"
+  if [ -n "$STILL" ] && [ "$(tr -d '0-9' < "$TMP/b")" = "$last" ]; then
+    :
+  elif [ -n "$ERR" ] && [ -z "$JOIN" ] && [ -z "$STILL" ]; then
+    printf '%s\n' "$body" >&2
+  else
+    printf '%s\n' "$body"
+  fi
+  [ -n "$STILL" ] && [ "$ERR" != in_progress ] && echo "Still waiting. Run hezou watch again to keep waiting."
+  if [ -n "$OPEN" ] && [ -z "$CAST" -o -z "$WATCH" ] && open_url "$OPEN"; then
+    [ "$OPEN" = saved ] || echo "  opened in your browser"
+  fi
+  return 0
+}
+
+send_mint() {
+  local to data
+  to=$(printf '%s' "$1" | tr 'A-Z' 'a-z')
+  data="$3"
+  case "$data" in
+    "$PAY_SELECTOR"*) ;;
+    *) to="" ;;
+  esac
+  case "$data" in
+    *[!0-9a-fA-Fx]*) to="" ;;
+  esac
+  if [ "$to" != "$(printf '%s' "$PAY_CONTRACT" | tr 'A-Z' 'a-z')" ] || [ "$2" != "$PAY_WEI" ]; then
+    echo "error: refusing to pay: the server asked for a transaction that is not the HEZOU mint at the exact price. Nothing was sent." >&2
+    exit 1
+  fi
+  echo "[chain] sending mint: 0.001 ETH to $PAY_CONTRACT on chain $PAY_CHAIN"
+  wallet_cast send --chain "$PAY_CHAIN" --rpc-url "$PAY_RPC" --value "$PAY_WEI" "$PAY_CONTRACT" --data "$data" --async || exit 1
+}
+
+pay_with_cast() {
+  local address
+  address=$(wallet_cast wallet address) || exit 1
+  echo "[chain] paying from agent wallet $address"
+  call pay "$1" "--wallet=$address"
+  [ "$CODE" = 0 ] && [ -n "$TX" ] || exit "$CODE"
+  send_mint $TX
+}
+
+case "${ARGS[0]:-help}" in
+  version)
+    echo "$VERSION"
+    exit 0
+    ;;
+  keys)
+    if ! perf=$(saved_performance); then
+      echo "error: no open performance saved on this machine: run hezou perform" >&2
+      exit 1
+    fi
+    tail -n +2 "$DIR/keys"
+    exit 0
+    ;;
+  hunt|proof|keep|pass)
+    if [ -z "$AGENT_KEY" ]; then
+      echo "error: layer actions need your agent key: --key=agt_… (the conductor gets the keys from hezou perform)" >&2
+      exit 3
+    fi
+    case " $LAYERS " in *" ${ARGS[1]:-none} "*) ;; *) echo "error: layer must be one of: $LAYERS" >&2; exit 1 ;; esac
+    ;;
+esac
+
+call "${ARGS[@]}"
+if [ "$CODE" = 3 ] && [ -n "$JOIN" ] && [ -z "$AGENT_KEY" ]; then
+  KEY=""
+  call join
+  [ "$CODE" = 0 ] || exit "$CODE"
+  call "${ARGS[@]}"
+fi
+if [ "$CODE" = 0 ] && [ -n "$WATCH" ] && [ -z "$TX" ]; then
+  if [ -n "$CAST" ]; then
+    pay_with_cast "$WATCH"
+  fi
+  if [ -z "$NO_WAIT" ]; then
+    echo "[chain] waiting for the transaction…"
+    call watch "$WATCH"
+  fi
+elif [ "$CODE" = 0 ] && [ -n "$TX" ] && [ -n "$CAST" ]; then
+  send_mint $TX
+  [ -n "$NO_WAIT" ] || call watch "$WATCH"
+fi
+exit "$CODE"
