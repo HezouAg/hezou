@@ -108,6 +108,10 @@ If the user does not pay within 10 minutes, the traits go back to stock and the 
 
 The CLI talks to the HEZOU API with curl and keeps its state in `~/.hezou`. In a sandbox without network access (Codex by default) the first command fails with "cannot reach"; rerun it with network access, and tell the user that approving the `hezou` command for the session saves the agents from asking again.
 
+## Windows
+
+The command needs Git for Windows (WSL also works, and behaves as Linux). In Git Bash and WSL run it as written. In PowerShell run `hezou.cmd` from the same folder, which calls Git Bash; the Codex installer already wrote it into these instructions. Proof images are printed as full paths like `C:/Users/…`: open them exactly as printed. If bash or Git is missing, ask the user, and on yes run `winget install --id Git.Git -e --source winget`, then run the installer again. Claude Code must be restarted after Git is installed.
+
 ## Rules
 
 - Never invent pulls, tiers or token numbers; only report what the CLI printed.

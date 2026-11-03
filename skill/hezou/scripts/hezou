@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-VERSION=0.5.1
+VERSION=0.5.2
 DIR="${HEZOU_HOME:-$HOME/.hezou}"
 CONFIG="$DIR/config"
 LAYERS="background character neck mouth eyes headwear item"
@@ -9,6 +9,14 @@ PAY_RPC="${HEZOU_PAY_RPC:-https://rpc.mainnet.chain.robinhood.com}"
 PAY_CHAIN="${HEZOU_PAY_CHAIN:-4663}"
 PAY_WEI=1000000000000000
 PAY_SELECTOR=0x3b05d19b
+
+native_path() {
+  if command -v cygpath >/dev/null 2>&1; then cygpath -m "$1"; else printf '%s' "$1"; fi
+}
+
+percent() {
+  printf '%s' "$1" | od -An -v -tx1 | tr -d ' \n\r' | sed 's/../%&/g'
+}
 
 conf() {
   [ -f "$CONFIG" ] && sed -n "s/^$1=//p" "$CONFIG" | tail -n 1
@@ -82,8 +90,8 @@ request() {
   local idem="$1" a
   shift
   local form=() extra=()
-  for a in "$@"; do form+=(--data-urlencode "a=$a"); done
-  [ ${#form[@]} -eq 0 ] && form=(--data-urlencode "a=help")
+  for a in "$@"; do form+=(-d "a=$(percent "$a")"); done
+  [ ${#form[@]} -eq 0 ] && form=(-d "a=help")
   [ -n "$KEY" ] && extra+=(-H "Authorization: Bearer $KEY")
   case "${1:-}" in
     doctor)
@@ -98,9 +106,9 @@ request() {
   esac
   : > "$TMP/h"
   : > "$TMP/b"
-  curl -sS --max-time 30 --retry 2 --retry-delay 1 --retry-connrefused -X POST "$API/cli" \
-    -D "$TMP/h" -o "$TMP/b" -H "Idempotency-Key: $idem" -H "X-Hezou-Client: hezou $VERSION" \
-    "${extra[@]}" "${form[@]}" 2> "$TMP/e"
+  (cd "$TMP" && curl -sS --max-time 30 --retry 2 --retry-delay 1 --retry-connrefused -X POST "$API/cli" \
+    -D h -o b -H "Idempotency-Key: $idem" -H "X-Hezou-Client: hezou $VERSION" \
+    "${extra[@]}" "${form[@]}") 2> "$TMP/e"
 }
 
 save_file() {
@@ -108,8 +116,8 @@ save_file() {
   case "$rel" in ""|/*|*..*) return 1 ;; esac
   case "$url" in /*) ;; *) return 1 ;; esac
   mkdir -p "$(dirname "$DIR/$rel")" || return 1
-  curl -sS -f --max-time 30 --retry 2 -H "Authorization: Bearer $KEY" "$API$url" -o "$DIR/$rel" 2>> "$TMP/e" || return 1
-  SAVED_PATH="$DIR/$rel"
+  curl -sS -f --max-time 30 --retry 2 -H "Authorization: Bearer $KEY" "$API$url" > "$DIR/$rel" 2>> "$TMP/e" || return 1
+  SAVED_PATH=$(native_path "$DIR/$rel")
 }
 
 open_url() {
@@ -125,7 +133,11 @@ open_url() {
   elif command -v xdg-open >/dev/null 2>&1; then
     xdg-open "$u" >/dev/null 2>&1 &
   elif command -v cmd.exe >/dev/null 2>&1; then
-    cmd.exe /c start "" "$u" >/dev/null 2>&1 &
+    case "$u" in
+      "$SITE"/*) ;;
+      *) if command -v wslpath >/dev/null 2>&1; then u=$(wslpath -w "$u"); else u="${u//\//\\}"; fi ;;
+    esac
+    MSYS2_ARG_CONV_EXCL='*' MSYS_NO_PATHCONV=1 cmd.exe /c start "" "$u" >/dev/null 2>&1 &
   else
     return 1
   fi

@@ -20,6 +20,14 @@ Codex:
 curl -fsSL https://hezou.app/install.sh | bash -s codex
 ```
 
+Windows needs [Git for Windows](https://git-scm.com/download/win) or WSL. In Git Bash and WSL the lines above work as written. In PowerShell:
+
+```powershell
+irm https://hezou.app/install.ps1 | iex
+```
+
+For Codex in PowerShell, run `$env:HEZOU_TARGET='codex'` first. The script finds Git Bash and runs the same `install.sh`.
+
 Then tell the conductor what you want, for example `/hezou hunt me a rare koi with something gold on top` (`$hezou …` in Codex).
 
 ## What the installer does
@@ -82,7 +90,7 @@ What the score sheet proves: the record is the one minted with the token, unchan
 
 HEZOU 合奏 是 Robinhood Chain 上的 2,222 个 24×24 像素角色，由你在 Claude Code 或 OpenAI Codex 里的 AI 小队狩猎而来。这个仓库包含会在你电脑上运行的全部代码，以及合约。
 
-安装（Claude Code）：`curl -fsSL https://hezou.app/install.sh | bash`，Codex 在末尾加 `-s codex`。然后用自己的话告诉指挥你想要什么，例如 `/hezou 帮我猎一条稀有锦鲤，头上要有金色的东西`。
+安装（Claude Code）：`curl -fsSL https://hezou.app/install.sh | bash`，Codex 在末尾加 `-s codex`。Windows 需要 Git for Windows 或 WSL，PowerShell 中运行 `irm https://hezou.app/install.ps1 | iex`（Codex 先运行 `$env:HEZOU_TARGET='codex'`）。然后用自己的话告诉指挥你想要什么，例如 `/hezou 帮我猎一条稀有锦鲤，头上要有金色的东西`。
 
 安装程序只用 bash 和 curl，不需要 Node.js 和 sudo，也不会写入你的主目录以外的地方。七个智能体各负责一个图层，从所有小队共享的有限库存里抽取；你确认后才会在铸造页用自己的钱包支付 0.001 ETH 加 gas 费。每次抽取都记入乐谱，乐谱的 SHA-256 存在合约里，文件永久存放在 Arweave 上。中文网站：[hezou.app/zh](https://hezou.app/zh)。
 

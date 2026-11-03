@@ -7,6 +7,9 @@ API="${HEZOU_API:-$SITE/api}"
 API="${API%/}"
 TARGET="${1:-${HEZOU_TARGET:-claude}}"
 LAYERS="background character neck mouth eyes headwear item"
+WINDOWS=""
+case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) WINDOWS=1 ;; esac
+CLI_NAME=hezou
 
 case "$TARGET" in
   claude)
@@ -22,6 +25,7 @@ case "$TARGET" in
     SKILL_REF="~/.agents/skills/hezou"
     CLIENT="Codex"
     SAY='$hezou'
+    if [ -n "$WINDOWS" ]; then CLI_NAME=hezou.cmd; fi
     ;;
   *)
     echo "Unknown target \"$TARGET\": use claude or codex" >&2
@@ -32,13 +36,13 @@ esac
 command -v curl >/dev/null 2>&1 || { echo "HEZOU needs curl" >&2; exit 1; }
 
 fetch() {
-  curl -fsSL --retry 2 "$SITE/skill/$1" -o "$2"
+  curl -fsSL --retry 2 "$SITE/skill/$1" > "$2"
   [ -s "$2" ] || { echo "Download of $1 came back empty" >&2; exit 1; }
 }
 
 for_target() {
   if [ "$TARGET" = codex ]; then
-    sed -e 's|~/.claude/skills/hezou|~/.agents/skills/hezou|g' -e '/^allowed-tools:/d'
+    sed -e "s|~/.claude/skills/hezou/scripts/hezou|~/.agents/skills/hezou/scripts/$CLI_NAME|g" -e 's|~/.claude/skills/hezou|~/.agents/skills/hezou|g' -e '/^allowed-tools:/d'
   else
     cat
   fi
@@ -62,6 +66,10 @@ grep -q '^name: hezou$' "$TMP/skill/SKILL.md" || { echo "SKILL.md looks wrong, n
 fetch "hezou/scripts/hezou" "$TMP/skill/scripts/hezou"
 bash -n "$TMP/skill/scripts/hezou" || { echo "The hezou command does not parse, nothing installed" >&2; exit 1; }
 chmod +x "$TMP/skill/scripts/hezou"
+if [ -n "$WINDOWS" ]; then
+  GIT_ROOT=$(cygpath -w /)
+  printf '@echo off\r\n"%s\\bin\\bash.exe" "%%~dp0hezou" %%*\r\nexit /b %%ERRORLEVEL%%\r\n' "${GIT_ROOT%\\}" > "$TMP/skill/scripts/hezou.cmd"
+fi
 VERSION=$(bash "$TMP/skill/scripts/hezou" version)
 for layer in $LAYERS; do
   fetch "agents/hezou-$layer.md" "$TMP/hezou-$layer.src.md"
@@ -95,7 +103,7 @@ CONFIG="$HOME/.hezou/config"
   mv "$CONFIG.tmp" "$CONFIG"
 )
 
-CLI="$SKILL_REF/scripts/hezou"
+CLI="$SKILL_REF/scripts/$CLI_NAME"
 echo "HEZOU $VERSION installed for $CLIENT:"
 echo "  conductor skill  $SKILL_REF/SKILL.md"
 if [ "$TARGET" = codex ]; then
